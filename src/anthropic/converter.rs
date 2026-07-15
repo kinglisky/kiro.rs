@@ -15,6 +15,7 @@ use crate::kiro::model::requests::tool::{
     InputSchema, Tool, ToolResult, ToolSpecification, ToolUseEntry,
 };
 
+use super::models::find_native_model;
 use super::types::{ContentBlock, MessagesRequest};
 
 /// 规范化 JSON Schema，修复 MCP 工具定义中常见的类型问题
@@ -80,8 +81,8 @@ Complete all chunked operations without commentary.";
 pub fn map_model(model: &str) -> Option<String> {
     let model_lower = model.to_lowercase();
 
-    if model_lower == "gpt-5.6-sol" {
-        return Some(model_lower);
+    if let Some(native_model) = find_native_model(&model_lower) {
+        return Some(native_model.id.to_string());
     }
 
     if model_lower.contains("sonnet") {
@@ -117,12 +118,18 @@ pub fn map_model(model: &str) -> Option<String> {
 /// Kiro 于 2026-03-24 将 Opus 4.6 和 Sonnet 4.6 升级至 1M 上下文。
 /// 4.7 / 4.8 同 1M
 pub fn get_context_window_size(model: &str) -> i32 {
+    if let Some(native_model) = find_native_model(model) {
+        return native_model.max_input_tokens;
+    }
+
     match map_model(model) {
-        Some(mapped) if mapped == "gpt-5.6-sol" => 272_000,
         Some(mapped)
             if matches!(
                 mapped.as_str(),
-                "claude-sonnet-4.6" | "claude-opus-4.6" | "claude-opus-4.7" | "claude-opus-4.8"
+                "claude-sonnet-4.6"
+                    | "claude-opus-4.6"
+                    | "claude-opus-4.7"
+                    | "claude-opus-4.8"
             ) =>
         {
             1_000_000
@@ -911,9 +918,36 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_map_model_gpt_5_6_sol_passthrough() {
-        assert_eq!(map_model("gpt-5.6-sol"), Some("gpt-5.6-sol".to_string()));
-        assert_eq!(get_context_window_size("gpt-5.6-sol"), 272_000);
+    fn test_map_native_models_passthrough_and_contexts() {
+        let models = [
+            ("gpt-5.6-sol", 272_000),
+            ("gpt-5.6-terra", 272_000),
+            ("gpt-5.6-luna", 272_000),
+            ("deepseek-3.2", 164_000),
+            ("minimax-m2.5", 196_000),
+            ("minimax-m2.1", 196_000),
+            ("glm-5", 200_000),
+            ("qwen3-coder-next", 256_000),
+        ];
+
+        for (model, context_window) in models {
+            assert_eq!(map_model(model).as_deref(), Some(model));
+            assert_eq!(get_context_window_size(model), context_window);
+        }
+    }
+
+    #[test]
+    fn test_map_native_models_rejects_unsupported_aliases() {
+        for model in [
+            "deepseek-chat",
+            "deepseek-reasoner",
+            "gpt-5.6-terra-thinking",
+            "minimax-m2.5-thinking",
+            "glm-5-thinking",
+            "qwen3-coder-next-thinking",
+        ] {
+            assert!(map_model(model).is_none(), "unexpected mapping for {model}");
+        }
     }
 
     #[test]
