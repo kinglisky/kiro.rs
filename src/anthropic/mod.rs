@@ -24,6 +24,7 @@
 
 mod converter;
 mod handlers;
+mod models;
 mod middleware;
 mod router;
 mod stream;
