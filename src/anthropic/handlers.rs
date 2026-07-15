@@ -1012,6 +1012,13 @@ mod tests {
                 .unwrap_or_else(|| panic!("missing model {}", spec.id));
             assert_eq!(model["max_tokens"], spec.max_output_tokens);
             assert_eq!(model["owned_by"], spec.owned_by);
+            assert_eq!(model["display_name"], spec.display_name);
+            assert_eq!(model["created"], spec.created);
         }
+
+        assert!(
+            models.iter().any(|model| model["id"] == "claude-sonnet-4-6"),
+            "missing Claude model claude-sonnet-4-6"
+        );
     }
 }

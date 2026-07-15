@@ -79,11 +79,11 @@ Complete all chunked operations without commentary.";
 /// 模型映射：将 Anthropic 模型名映射到 Kiro 模型 ID
 /// 严格对照版本号
 pub fn map_model(model: &str) -> Option<String> {
-    let model_lower = model.to_lowercase();
-
-    if let Some(native_model) = find_native_model(&model_lower) {
+    if let Some(native_model) = find_native_model(model) {
         return Some(native_model.id.to_string());
     }
+
+    let model_lower = model.to_lowercase();
 
     if model_lower.contains("sonnet") {
         if model_lower.contains("4-6") || model_lower.contains("4.6") {
@@ -941,6 +941,7 @@ mod tests {
         for model in [
             "deepseek-chat",
             "deepseek-reasoner",
+            "deepseeK-3.2",
             "gpt-5.6-terra-thinking",
             "minimax-m2.5-thinking",
             "glm-5-thinking",
@@ -948,6 +949,8 @@ mod tests {
         ] {
             assert!(map_model(model).is_none(), "unexpected mapping for {model}");
         }
+
+        assert_eq!(get_context_window_size("deepseeK-3.2"), 200_000);
     }
 
     #[test]

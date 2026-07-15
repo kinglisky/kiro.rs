@@ -88,15 +88,64 @@ mod tests {
 
     use super::{NATIVE_MODELS, find_native_model};
 
-    const EXPECTED_MODELS: [(&str, i32, i32); 8] = [
-        ("gpt-5.6-sol", 272_000, 128_000),
-        ("gpt-5.6-terra", 272_000, 128_000),
-        ("gpt-5.6-luna", 272_000, 128_000),
-        ("deepseek-3.2", 164_000, 64_000),
-        ("minimax-m2.5", 196_000, 64_000),
-        ("minimax-m2.1", 196_000, 64_000),
-        ("glm-5", 200_000, 64_000),
-        ("qwen3-coder-next", 256_000, 64_000),
+    const EXPECTED_MODELS: [(&str, &str, &str, i64, i32, i32); 8] = [
+        (
+            "gpt-5.6-sol",
+            "GPT 5.6 Sol",
+            "openai",
+            1_783_987_200,
+            272_000,
+            128_000,
+        ),
+        (
+            "gpt-5.6-terra",
+            "GPT 5.6 Terra",
+            "openai",
+            1_783_987_200,
+            272_000,
+            128_000,
+        ),
+        (
+            "gpt-5.6-luna",
+            "GPT 5.6 Luna",
+            "openai",
+            1_783_987_200,
+            272_000,
+            128_000,
+        ),
+        (
+            "deepseek-3.2",
+            "DeepSeek V3.2",
+            "deepseek",
+            0,
+            164_000,
+            64_000,
+        ),
+        (
+            "minimax-m2.5",
+            "MiniMax M2.5",
+            "minimax",
+            0,
+            196_000,
+            64_000,
+        ),
+        (
+            "minimax-m2.1",
+            "MiniMax M2.1",
+            "minimax",
+            0,
+            196_000,
+            64_000,
+        ),
+        ("glm-5", "GLM-5", "z-ai", 0, 200_000, 64_000),
+        (
+            "qwen3-coder-next",
+            "Qwen3 Coder Next",
+            "qwen",
+            0,
+            256_000,
+            64_000,
+        ),
     ];
 
     #[test]
@@ -105,8 +154,13 @@ mod tests {
         assert_eq!(ids.len(), NATIVE_MODELS.len());
         assert_eq!(NATIVE_MODELS.len(), EXPECTED_MODELS.len());
 
-        for (id, max_input_tokens, max_output_tokens) in EXPECTED_MODELS {
+        for (id, display_name, owned_by, created, max_input_tokens, max_output_tokens) in
+            EXPECTED_MODELS
+        {
             let model = find_native_model(id).expect("native model must exist");
+            assert_eq!(model.display_name, display_name);
+            assert_eq!(model.owned_by, owned_by);
+            assert_eq!(model.created, created);
             assert_eq!(model.max_input_tokens, max_input_tokens);
             assert_eq!(model.max_output_tokens, max_output_tokens);
         }
