@@ -68,9 +68,6 @@ fn map_provider_error(err: Error) -> Response {
         .into_response()
 }
 
-/// GET /v1/models
-///
-/// 返回可用的模型列表
 fn native_model_to_response(spec: &NativeModelSpec) -> Model {
     Model {
         id: spec.id.to_string(),
@@ -83,6 +80,9 @@ fn native_model_to_response(spec: &NativeModelSpec) -> Model {
     }
 }
 
+/// GET /v1/models
+///
+/// 返回可用的模型列表
 pub async fn get_models() -> impl IntoResponse {
     tracing::info!("Received GET /v1/models request");
 
