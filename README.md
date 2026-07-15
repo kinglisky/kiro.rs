@@ -41,7 +41,7 @@
 - **Thinking 模式**: 支持 Claude 的 extended thinking 功能
 - **工具调用**: 完整支持 function calling / tool use
 - **WebSearch**: 内置 WebSearch 工具转换逻辑
-- **多模型支持**: 支持 Sonnet、Opus、Haiku 系列模型
+- **多模型支持**: 精确支持 GPT 5.6、DeepSeek V3.2、MiniMax M2.5/M2.1、GLM-5、Qwen3 Coder Next，并保留 Claude 系列兼容映射
 - **Admin 管理**: 可选的 Web 管理界面和 API，支持凭据管理、余额查询等
 - **多级 Region 配置**: 支持全局和凭据级别的 Auth Region / API Region 配置
 - **凭据级代理**: 支持为每个凭据单独配置 HTTP/SOCKS5 代理，优先级：凭据代理 > 全局代理 > 无代理
@@ -439,6 +439,14 @@ RUST_LOG=debug ./target/release/kiro-rs
 
 | Anthropic 模型 | Kiro 模型 |
 |----------------|-----------|
+| `gpt-5.6-sol` | `gpt-5.6-sol` |
+| `gpt-5.6-terra` | `gpt-5.6-terra` |
+| `gpt-5.6-luna` | `gpt-5.6-luna` |
+| `deepseek-3.2` | `deepseek-3.2` |
+| `minimax-m2.5` | `minimax-m2.5` |
+| `minimax-m2.1` | `minimax-m2.1` |
+| `glm-5` | `glm-5` |
+| `qwen3-coder-next` | `qwen3-coder-next` |
 | `*sonnet*` | `claude-sonnet-4.5` |
 | `*opus*`（含 4.5/4-5） | `claude-opus-4.5` |
 | `*opus*`（其他） | `claude-opus-4.6` |

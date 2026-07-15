@@ -192,7 +192,10 @@ Kiro Enterprise 的模型目录、订阅、额度和管理员策略都绑定到 
 
 模型映射只负责将客户端模型名称转换为 Kiro 请求中的 `modelId`。映射代码能够生成某个 Claude `modelId`，也不代表上游授权该 ID。
 
-`gpt-5.6-sol` 在本项目中采用原生 ID 透传，不会伪装成 Claude。
+以下 Kiro 原生 ID 在本项目中采用精确透传，不会伪装成 Claude：
+`gpt-5.6-sol`、`gpt-5.6-terra`、`gpt-5.6-luna`、`deepseek-3.2`、
+`minimax-m2.5`、`minimax-m2.1`、`glm-5`、`qwen3-coder-next`。
+供应商别名和新增模型的 `-thinking` 后缀不会映射到这些 ID。
 
 ### 6.3 Kiro 上游 `ListAvailableModels`
 
@@ -335,6 +338,6 @@ Invoke-RestMethod `
 
 - `config.json` 管理本地代理；`credentials.json` 管理 Kiro 上游身份，两者不可混用。
 - Enterprise IdC 应完整配置 `refreshToken`、`clientId`、`clientSecret`、Region 和 `profileArn`。
-- 当前账号真实可用目录只包含 GPT/DeepSeek/MiniMax/GLM/Qwen，`gpt-5.6-sol` 已验证成功。
+- 当前账号真实可用目录只包含 GPT/DeepSeek/MiniMax/GLM/Qwen；本地精确映射不等于账号永久授权，实际可用性以最新真实调用为准。
 - Claude 缺失最可能由 Enterprise Kiro Profile 的模型 allow list 导致，不是 `kiro-rs` 映射本身，也不是 Kiro 全球下架 Claude。
 - 恢复真实 Claude 的正确方式是由组织管理员批准 Claude，并在客户端重启后确认它重新出现在 `ListAvailableModels` 中。
