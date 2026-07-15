@@ -23,6 +23,7 @@ use uuid::Uuid;
 
 use super::converter::{ConversionError, convert_request};
 use super::middleware::AppState;
+use super::models::{NATIVE_MODELS, NativeModelSpec};
 use super::stream::{BufferedStreamContext, SseEvent, StreamContext};
 use super::types::{CountTokensRequest, CountTokensResponse, ErrorResponse, MessagesRequest, Model, ModelsResponse, OutputConfig, Thinking};
 use super::websearch;
@@ -70,19 +71,27 @@ fn map_provider_error(err: Error) -> Response {
 /// GET /v1/models
 ///
 /// 返回可用的模型列表
+fn native_model_to_response(spec: &NativeModelSpec) -> Model {
+    Model {
+        id: spec.id.to_string(),
+        object: "model".to_string(),
+        created: spec.created,
+        owned_by: spec.owned_by.to_string(),
+        display_name: spec.display_name.to_string(),
+        model_type: "chat".to_string(),
+        max_tokens: spec.max_output_tokens,
+    }
+}
+
 pub async fn get_models() -> impl IntoResponse {
     tracing::info!("Received GET /v1/models request");
 
-    let models = vec![
-        Model {
-            id: "gpt-5.6-sol".to_string(),
-            object: "model".to_string(),
-            created: 1783987200, // Jul 14, 2026
-            owned_by: "openai".to_string(),
-            display_name: "GPT 5.6 Sol".to_string(),
-            model_type: "chat".to_string(),
-            max_tokens: 128_000,
-        },
+    let mut models: Vec<Model> = NATIVE_MODELS
+        .iter()
+        .map(native_model_to_response)
+        .collect();
+
+    models.extend([
         Model {
             id: "claude-opus-4-8".to_string(),
             object: "model".to_string(),
@@ -209,7 +218,7 @@ pub async fn get_models() -> impl IntoResponse {
             model_type: "chat".to_string(),
             max_tokens: 64000,
         },
-    ];
+    ]);
 
     Json(ModelsResponse {
         object: "list".to_string(),
@@ -980,4 +989,29 @@ fn create_buffered_sse_stream(
         },
     )
     .flatten()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn get_models_contains_every_native_model_with_output_limit() {
+        let response = get_models().await.into_response();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("models response body");
+        let payload: serde_json::Value =
+            serde_json::from_slice(&body).expect("valid models response");
+        let models = payload["data"].as_array().expect("models data array");
+
+        for spec in crate::anthropic::models::NATIVE_MODELS {
+            let model = models
+                .iter()
+                .find(|model| model["id"] == spec.id)
+                .unwrap_or_else(|| panic!("missing model {}", spec.id));
+            assert_eq!(model["max_tokens"], spec.max_output_tokens);
+            assert_eq!(model["owned_by"], spec.owned_by);
+        }
+    }
 }
