@@ -48,6 +48,8 @@
 
 ---
 
+macOS 与 Windows 用户请先阅读 [本地安装、Kiro 授权与启动指引](docs/getting-started-macos-windows.md)。
+
 - [开始](#开始)
   - [1. 编译](#1-编译)
   - [2. 最小配置](#2-最小配置)
