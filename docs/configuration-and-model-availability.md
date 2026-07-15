@@ -192,7 +192,7 @@ Kiro Enterprise 的模型目录、订阅、额度和管理员策略都绑定到 
 
 模型映射只负责将客户端模型名称转换为 Kiro 请求中的 `modelId`。映射代码能够生成某个 Claude `modelId`，也不代表上游授权该 ID。
 
-以下 Kiro 原生 ID 在本项目中采用精确透传，不会伪装成 Claude：
+输入模型 ID 经 ASCII 大小写归一后，若匹配以下 Kiro 原生 ID，则按对应原生 ID 精确透传，不会伪装成 Claude：
 `gpt-5.6-sol`、`gpt-5.6-terra`、`gpt-5.6-luna`、`deepseek-3.2`、
 `minimax-m2.5`、`minimax-m2.1`、`glm-5`、`qwen3-coder-next`。
 供应商别名和新增模型的 `-thinking` 后缀不会映射到这些 ID。
