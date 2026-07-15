@@ -80,6 +80,10 @@ Complete all chunked operations without commentary.";
 pub fn map_model(model: &str) -> Option<String> {
     let model_lower = model.to_lowercase();
 
+    if model_lower == "gpt-5.6-sol" {
+        return Some(model_lower);
+    }
+
     if model_lower.contains("sonnet") {
         if model_lower.contains("4-6") || model_lower.contains("4.6") {
             Some("claude-sonnet-4.6".to_string())
@@ -114,7 +118,15 @@ pub fn map_model(model: &str) -> Option<String> {
 /// 4.7 / 4.8 同 1M
 pub fn get_context_window_size(model: &str) -> i32 {
     match map_model(model) {
-        Some(mapped) if mapped == "claude-sonnet-4.6" || mapped == "claude-opus-4.6" || mapped == "claude-opus-4.7" || mapped == "claude-opus-4.8" => 1_000_000,
+        Some(mapped) if mapped == "gpt-5.6-sol" => 272_000,
+        Some(mapped)
+            if matches!(
+                mapped.as_str(),
+                "claude-sonnet-4.6" | "claude-opus-4.6" | "claude-opus-4.7" | "claude-opus-4.8"
+            ) =>
+        {
+            1_000_000
+        }
         _ => 200_000,
     }
 }
@@ -897,6 +909,12 @@ fn merge_assistant_messages(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_map_model_gpt_5_6_sol_passthrough() {
+        assert_eq!(map_model("gpt-5.6-sol"), Some("gpt-5.6-sol".to_string()));
+        assert_eq!(get_context_window_size("gpt-5.6-sol"), 272_000);
+    }
 
     #[test]
     fn test_map_model_sonnet() {

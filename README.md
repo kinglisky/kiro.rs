@@ -167,6 +167,8 @@ docker-compose up
 
 ## 配置详解
 
+> 关于完整字段、Windows IdC 凭据来源、Region/代理优先级，以及模型列表与 Enterprise allow list 的关系，请阅读 [Kiro RS 配置与模型可用性说明](docs/configuration-and-model-availability.md)。
+
 ### config.json
 
 | 字段 | 类型 | 默认值 | 描述 |
