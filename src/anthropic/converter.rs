@@ -211,6 +211,64 @@ fn additional_model_request_fields(
     })
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReasoningControl {
+    Native,
+    NativeAndXml,
+    Xml,
+    None,
+}
+
+impl ReasoningControl {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Native => "native",
+            Self::NativeAndXml => "native+xml",
+            Self::Xml => "xml",
+            Self::None => "none",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ReasoningLogMetadata<'a> {
+    thinking_enabled: bool,
+    thinking_type: Option<&'a str>,
+    effective_effort: Option<ReasoningEffort>,
+    control: ReasoningControl,
+    budget_tokens: Option<i32>,
+}
+
+fn reasoning_log_metadata<'a>(
+    req: &'a MessagesRequest,
+    model_id: &str,
+    effective_effort: Option<ReasoningEffort>,
+    native_enabled: bool,
+) -> ReasoningLogMetadata<'a> {
+    let xml_enabled = xml_thinking_enabled(req, model_id, effective_effort);
+    let control = match (native_enabled, xml_enabled) {
+        (true, true) => ReasoningControl::NativeAndXml,
+        (true, false) => ReasoningControl::Native,
+        (false, true) => ReasoningControl::Xml,
+        (false, false) => ReasoningControl::None,
+    };
+    let budget_tokens = req.thinking.as_ref().and_then(|thinking| {
+        (xml_enabled && thinking.thinking_type == "enabled").then_some(thinking.budget_tokens)
+    });
+
+    ReasoningLogMetadata {
+        thinking_enabled: control != ReasoningControl::None
+            && effective_effort.is_some_and(|effort| effort != ReasoningEffort::None),
+        thinking_type: req
+            .thinking
+            .as_ref()
+            .map(|thinking| thinking.thinking_type.as_str()),
+        effective_effort,
+        control,
+        budget_tokens,
+    }
+}
+
 /// 转换错误
 #[derive(Debug)]
 pub enum ConversionError {
@@ -315,6 +373,12 @@ fn convert_request_with_default_reasoning_effort(
         .ok_or_else(|| ConversionError::UnsupportedModel(req.model.clone()))?;
     let effort = effective_reasoning_effort(req, default_effort);
     let additional_model_request_fields = additional_model_request_fields(&model_id, effort);
+    let reasoning_metadata = reasoning_log_metadata(
+        req,
+        &model_id,
+        effort,
+        additional_model_request_fields.is_some(),
+    );
 
     // 2. 检查消息列表
     if req.messages.is_empty() {
@@ -420,6 +484,24 @@ fn convert_request_with_default_reasoning_effort(
             tool_name_map.len()
         );
     }
+
+    let budget_tokens = reasoning_metadata
+        .budget_tokens
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "not_set".to_string());
+    tracing::info!(
+        model = %req.model,
+        kiro_model = %model_id,
+        thinking = if reasoning_metadata.thinking_enabled { "enabled" } else { "disabled" },
+        thinking_type = reasoning_metadata.thinking_type.unwrap_or("not_set"),
+        effective_effort = reasoning_metadata
+            .effective_effort
+            .map(ReasoningEffort::as_str)
+            .unwrap_or("not_set"),
+        control = reasoning_metadata.control.as_str(),
+        budget_tokens = %budget_tokens,
+        "Reasoning control resolved"
+    );
 
     Ok(ConversionResult {
         conversation_state,
@@ -708,13 +790,27 @@ fn convert_tools(tools: &Option<Vec<super::types::Tool>>, tool_name_map: &mut Ha
         .collect()
 }
 
+fn xml_thinking_enabled(
+    req: &MessagesRequest,
+    model_id: &str,
+    effort: Option<ReasoningEffort>,
+) -> bool {
+    if !uses_legacy_thinking_tags(model_id) || effort == Some(ReasoningEffort::None) {
+        return false;
+    }
+
+    req.thinking.as_ref().is_some_and(|thinking| {
+        matches!(thinking.thinking_type.as_str(), "enabled" | "adaptive")
+    })
+}
+
 /// 生成thinking标签前缀
 fn generate_thinking_prefix(
     req: &MessagesRequest,
     model_id: &str,
     effort: Option<ReasoningEffort>,
 ) -> Option<String> {
-    if !uses_legacy_thinking_tags(model_id) || effort == Some(ReasoningEffort::None) {
+    if !xml_thinking_enabled(req, model_id, effort) {
         return None;
     }
 
@@ -1008,6 +1104,81 @@ mod tests {
             "output_config": {"effort": "max"}
         }))
         .unwrap()
+    }
+
+    #[test]
+    fn reasoning_log_metadata_reports_final_strategy() {
+        let gpt = adaptive_reasoning_request("gpt-5.6-sol");
+        let metadata = reasoning_log_metadata(
+            &gpt,
+            "gpt-5.6-sol",
+            Some(ReasoningEffort::Max),
+            true,
+        );
+        assert!(metadata.thinking_enabled);
+        assert_eq!(metadata.thinking_type, Some("adaptive"));
+        assert_eq!(metadata.effective_effort, Some(ReasoningEffort::Max));
+        assert_eq!(metadata.control, ReasoningControl::Native);
+        assert_eq!(metadata.budget_tokens, None);
+
+        let claude = adaptive_reasoning_request("claude-sonnet-4-6");
+        let metadata = reasoning_log_metadata(
+            &claude,
+            "claude-sonnet-4.6",
+            Some(ReasoningEffort::Max),
+            true,
+        );
+        assert_eq!(metadata.control, ReasoningControl::NativeAndXml);
+
+        let other: MessagesRequest = serde_json::from_value(serde_json::json!({
+            "model": "deepseek-3.2",
+            "max_tokens": 1024,
+            "messages": [{"role": "user", "content": "Hello"}],
+            "thinking": {"type": "enabled", "budget_tokens": 100000},
+            "output_config": {"effort": "max"}
+        }))
+        .unwrap();
+        let metadata = reasoning_log_metadata(
+            &other,
+            "deepseek-3.2",
+            Some(ReasoningEffort::Max),
+            false,
+        );
+        assert!(metadata.thinking_enabled);
+        assert_eq!(metadata.control, ReasoningControl::Xml);
+        assert_eq!(metadata.budget_tokens, Some(24_576));
+
+        let disabled: MessagesRequest = serde_json::from_value(serde_json::json!({
+            "model": "claude-sonnet-4-6",
+            "max_tokens": 1024,
+            "messages": [{"role": "user", "content": "Hello"}],
+            "thinking": {"type": "disabled"},
+            "output_config": {"effort": "max"}
+        }))
+        .unwrap();
+        let metadata = reasoning_log_metadata(
+            &disabled,
+            "claude-sonnet-4.6",
+            Some(ReasoningEffort::None),
+            true,
+        );
+        assert!(!metadata.thinking_enabled);
+        assert_eq!(metadata.effective_effort, Some(ReasoningEffort::None));
+        assert_eq!(metadata.control, ReasoningControl::Native);
+        assert_eq!(metadata.budget_tokens, None);
+
+        let not_set: MessagesRequest = serde_json::from_value(serde_json::json!({
+            "model": "claude-sonnet-4-6",
+            "max_tokens": 1024,
+            "messages": [{"role": "user", "content": "Hello"}]
+        }))
+        .unwrap();
+        let metadata = reasoning_log_metadata(&not_set, "claude-sonnet-4.6", None, false);
+        assert!(!metadata.thinking_enabled);
+        assert_eq!(metadata.thinking_type, None);
+        assert_eq!(metadata.effective_effort, None);
+        assert_eq!(metadata.control, ReasoningControl::None);
+        assert_eq!(metadata.budget_tokens, None);
     }
 
     #[test]
