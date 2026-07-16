@@ -11,6 +11,9 @@ use crate::kiro::model::requests::conversation::{
     AssistantMessage, ConversationState, CurrentMessage, HistoryAssistantMessage,
     HistoryUserMessage, KiroImage, Message, UserInputMessage, UserInputMessageContext, UserMessage,
 };
+use crate::kiro::model::requests::kiro::{
+    AdditionalModelRequestFields, Reasoning, ReasoningEffort,
+};
 use crate::kiro::model::requests::tool::{
     InputSchema, Tool, ToolResult, ToolSpecification, ToolUseEntry,
 };
@@ -143,8 +146,69 @@ pub fn get_context_window_size(model: &str) -> i32 {
 pub struct ConversionResult {
     /// 转换后的 Kiro 请求
     pub conversation_state: ConversationState,
+    /// 模型原生扩展请求字段
+    pub additional_model_request_fields: Option<AdditionalModelRequestFields>,
     /// 工具名称映射（短名称 → 原始名称），仅当存在超长工具名时非空
     pub tool_name_map: HashMap<String, String>,
+}
+
+const DEFAULT_REASONING_EFFORT_ENV: &str = "KIRO_DEFAULT_REASONING_EFFORT";
+const NATIVE_ONLY_REASONING_MODELS: [&str; 3] = ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"];
+
+fn is_claude_model(model_id: &str) -> bool {
+    model_id.get(..7).is_some_and(|prefix| {
+        prefix.eq_ignore_ascii_case("claude-") || prefix.eq_ignore_ascii_case("claude_")
+    })
+}
+
+fn supports_native_reasoning(model_id: &str) -> bool {
+    NATIVE_ONLY_REASONING_MODELS.contains(&model_id) || is_claude_model(model_id)
+}
+
+fn uses_legacy_thinking_tags(model_id: &str) -> bool {
+    !NATIVE_ONLY_REASONING_MODELS.contains(&model_id)
+}
+
+fn parse_default_reasoning_effort(value: Option<&str>) -> ReasoningEffort {
+    value
+        .and_then(|effort| effort.to_ascii_lowercase().parse().ok())
+        .unwrap_or(ReasoningEffort::High)
+}
+
+fn default_reasoning_effort() -> ReasoningEffort {
+    let value = std::env::var(DEFAULT_REASONING_EFFORT_ENV).ok();
+    parse_default_reasoning_effort(value.as_deref())
+}
+
+fn effective_reasoning_effort(
+    req: &MessagesRequest,
+    default_effort: ReasoningEffort,
+) -> Option<ReasoningEffort> {
+    if req
+        .thinking
+        .as_ref()
+        .is_some_and(|thinking| thinking.thinking_type == "disabled")
+    {
+        return Some(ReasoningEffort::None);
+    }
+
+    if let Some(effort) = req.output_config.as_ref().and_then(|config| config.effort) {
+        return Some(effort);
+    }
+
+    req.thinking.as_ref().and_then(|thinking| {
+        matches!(thinking.thinking_type.as_str(), "enabled" | "adaptive").then_some(default_effort)
+    })
+}
+
+fn additional_model_request_fields(
+    model_id: &str,
+    effort: Option<ReasoningEffort>,
+) -> Option<AdditionalModelRequestFields> {
+    let effort = effort?;
+    supports_native_reasoning(model_id).then_some(AdditionalModelRequestFields {
+        reasoning: Reasoning { effort },
+    })
 }
 
 /// 转换错误
@@ -239,9 +303,18 @@ fn create_placeholder_tool(name: &str) -> Tool {
 
 /// 将 Anthropic 请求转换为 Kiro 请求
 pub fn convert_request(req: &MessagesRequest) -> Result<ConversionResult, ConversionError> {
+    convert_request_with_default_reasoning_effort(req, default_reasoning_effort())
+}
+
+fn convert_request_with_default_reasoning_effort(
+    req: &MessagesRequest,
+    default_effort: ReasoningEffort,
+) -> Result<ConversionResult, ConversionError> {
     // 1. 映射模型
     let model_id = map_model(&req.model)
         .ok_or_else(|| ConversionError::UnsupportedModel(req.model.clone()))?;
+    let effort = effective_reasoning_effort(req, default_effort);
+    let additional_model_request_fields = additional_model_request_fields(&model_id, effort);
 
     // 2. 检查消息列表
     if req.messages.is_empty() {
@@ -284,7 +357,7 @@ pub fn convert_request(req: &MessagesRequest) -> Result<ConversionResult, Conver
     let mut tools = convert_tools(&req.tools, &mut tool_name_map);
 
     // 7. 构建历史消息（需要先构建，以便收集历史中使用的工具）
-    let mut history = build_history(req, messages, &model_id, &mut tool_name_map)?;
+    let mut history = build_history(req, messages, &model_id, effort, &mut tool_name_map)?;
 
     // 8. 验证并过滤 tool_use/tool_result 配对
     // 移除孤立的 tool_result（没有对应的 tool_use）
@@ -350,6 +423,7 @@ pub fn convert_request(req: &MessagesRequest) -> Result<ConversionResult, Conver
 
     Ok(ConversionResult {
         conversation_state,
+        additional_model_request_fields,
         tool_name_map,
     })
 }
@@ -635,26 +709,27 @@ fn convert_tools(tools: &Option<Vec<super::types::Tool>>, tool_name_map: &mut Ha
 }
 
 /// 生成thinking标签前缀
-fn generate_thinking_prefix(req: &MessagesRequest) -> Option<String> {
-    if let Some(t) = &req.thinking {
-        if t.thinking_type == "enabled" {
-            return Some(format!(
-                "<thinking_mode>enabled</thinking_mode><max_thinking_length>{}</max_thinking_length>",
-                t.budget_tokens
-            ));
-        } else if t.thinking_type == "adaptive" {
-            let effort = req
-                .output_config
-                .as_ref()
-                .map(|c| c.effort.as_str())
-                .unwrap_or("high");
-            return Some(format!(
-                "<thinking_mode>adaptive</thinking_mode><thinking_effort>{}</thinking_effort>",
-                effort
-            ));
-        }
+fn generate_thinking_prefix(
+    req: &MessagesRequest,
+    model_id: &str,
+    effort: Option<ReasoningEffort>,
+) -> Option<String> {
+    if !uses_legacy_thinking_tags(model_id) || effort == Some(ReasoningEffort::None) {
+        return None;
     }
-    None
+
+    let thinking = req.thinking.as_ref()?;
+    match thinking.thinking_type.as_str() {
+        "enabled" => Some(format!(
+            "<thinking_mode>enabled</thinking_mode><max_thinking_length>{}</max_thinking_length>",
+            thinking.budget_tokens
+        )),
+        "adaptive" => Some(format!(
+            "<thinking_mode>adaptive</thinking_mode><thinking_effort>{}</thinking_effort>",
+            effort?.as_str()
+        )),
+        _ => None,
+    }
 }
 
 /// 检查内容是否已包含thinking标签
@@ -670,11 +745,17 @@ fn has_thinking_tags(content: &str) -> bool {
 ///   注意：该切片与 `req.messages` 可能不同（prefill 时会截断末尾的 assistant 消息），
 ///   调用方应始终使用此参数而非 `req.messages`。
 /// * `model_id` - 已映射的 Kiro 模型 ID
-fn build_history(req: &MessagesRequest, messages: &[super::types::Message], model_id: &str, tool_name_map: &mut HashMap<String, String>) -> Result<Vec<Message>, ConversionError> {
+fn build_history(
+    req: &MessagesRequest,
+    messages: &[super::types::Message],
+    model_id: &str,
+    effort: Option<ReasoningEffort>,
+    tool_name_map: &mut HashMap<String, String>,
+) -> Result<Vec<Message>, ConversionError> {
     let mut history = Vec::new();
 
     // 生成thinking前缀（如果需要）
-    let thinking_prefix = generate_thinking_prefix(req);
+    let thinking_prefix = generate_thinking_prefix(req, model_id, effort);
 
     // 1. 处理系统消息
     if let Some(ref system) = req.system {
@@ -916,6 +997,226 @@ fn merge_assistant_messages(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::kiro::model::requests::kiro::ReasoningEffort;
+
+    fn adaptive_reasoning_request(model: &str) -> MessagesRequest {
+        serde_json::from_value(serde_json::json!({
+            "model": model,
+            "max_tokens": 1024,
+            "messages": [{"role": "user", "content": "Hello"}],
+            "thinking": {"type": "adaptive"},
+            "output_config": {"effort": "max"}
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn gpt_5_6_reasoning_is_native_without_xml() {
+        for model in ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"] {
+            let result = convert_request(&adaptive_reasoning_request(model)).unwrap();
+
+            assert_eq!(
+                result
+                    .additional_model_request_fields
+                    .as_ref()
+                    .map(|fields| fields.reasoning.effort),
+                Some(ReasoningEffort::Max)
+            );
+            assert!(result.conversation_state.history.is_empty());
+            assert!(
+                !serde_json::to_string(&result.conversation_state)
+                    .unwrap()
+                    .contains("<thinking_")
+            );
+        }
+    }
+
+    #[test]
+    fn claude_reasoning_is_native_with_xml() {
+        let result = convert_request(&adaptive_reasoning_request("claude-sonnet-4-6")).unwrap();
+
+        assert_eq!(
+            result
+                .additional_model_request_fields
+                .as_ref()
+                .map(|fields| fields.reasoning.effort),
+            Some(ReasoningEffort::Max)
+        );
+        assert!(
+            serde_json::to_string(&result.conversation_state)
+                .unwrap()
+                .contains(
+                    "<thinking_mode>adaptive</thinking_mode><thinking_effort>max</thinking_effort>"
+                )
+        );
+    }
+
+    #[test]
+    fn gpt_near_match_uses_xml_without_native_reasoning() {
+        let request = adaptive_reasoning_request("gpt-5.6-sol-preview");
+        let effort = effective_reasoning_effort(&request, ReasoningEffort::High);
+
+        assert!(additional_model_request_fields("gpt-5.6-sol-preview", effort).is_none());
+        assert!(
+            generate_thinking_prefix(&request, "gpt-5.6-sol-preview", effort)
+                .unwrap()
+                .contains("<thinking_effort>max</thinking_effort>")
+        );
+        assert!(supports_native_reasoning("CLAUDE_OPUS_4_6"));
+    }
+
+    #[test]
+    fn other_native_models_keep_xml_without_native_reasoning() {
+        let result = convert_request(&adaptive_reasoning_request("deepseek-3.2")).unwrap();
+
+        assert!(result.additional_model_request_fields.is_none());
+        assert!(
+            serde_json::to_string(&result.conversation_state)
+                .unwrap()
+                .contains("<thinking_effort>max</thinking_effort>")
+        );
+    }
+
+    #[test]
+    fn claude_disabled_thinking_sends_none_without_xml() {
+        let request = serde_json::from_value(serde_json::json!({
+            "model": "claude-sonnet-4-6",
+            "max_tokens": 1024,
+            "messages": [{"role": "user", "content": "Hello"}],
+            "thinking": {"type": "disabled"},
+            "output_config": {"effort": "max"}
+        }))
+        .unwrap();
+        let result = convert_request(&request).unwrap();
+
+        assert_eq!(
+            result
+                .additional_model_request_fields
+                .as_ref()
+                .map(|fields| fields.reasoning.effort),
+            Some(ReasoningEffort::None)
+        );
+        assert!(
+            !serde_json::to_string(&result.conversation_state)
+                .unwrap()
+                .contains("<thinking_")
+        );
+    }
+
+    #[test]
+    fn omitted_reasoning_config_sends_no_native_field() {
+        let request = serde_json::from_value(serde_json::json!({
+            "model": "claude-sonnet-4-6",
+            "max_tokens": 1024,
+            "messages": [{"role": "user", "content": "Hello"}],
+            "output_config": {}
+        }))
+        .unwrap();
+        let result = convert_request(&request).unwrap();
+
+        assert!(result.additional_model_request_fields.is_none());
+    }
+
+    #[test]
+    fn explicit_effort_without_thinking_sends_native_field() {
+        let request = serde_json::from_value(serde_json::json!({
+            "model": "claude-sonnet-4-6",
+            "max_tokens": 1024,
+            "messages": [{"role": "user", "content": "Hello"}],
+            "output_config": {"effort": "xhigh"}
+        }))
+        .unwrap();
+        let result = convert_request(&request).unwrap();
+
+        assert_eq!(
+            result
+                .additional_model_request_fields
+                .as_ref()
+                .map(|fields| fields.reasoning.effort),
+            Some(ReasoningEffort::Xhigh)
+        );
+    }
+
+    #[test]
+    fn enabled_thinking_uses_budget_unless_effective_effort_is_none() {
+        let mut request: MessagesRequest = serde_json::from_value(serde_json::json!({
+            "model": "deepseek-3.2",
+            "max_tokens": 1024,
+            "messages": [{"role": "user", "content": "Hello"}],
+            "thinking": {"type": "enabled", "budget_tokens": 4096}
+        }))
+        .unwrap();
+
+        let enabled =
+            convert_request_with_default_reasoning_effort(&request, ReasoningEffort::Low).unwrap();
+        assert!(
+            serde_json::to_string(&enabled.conversation_state)
+                .unwrap()
+                .contains("<max_thinking_length>4096</max_thinking_length>")
+        );
+
+        request.output_config = Some(super::super::types::OutputConfig {
+            effort: Some(ReasoningEffort::None),
+        });
+        let disabled = convert_request(&request).unwrap();
+        assert!(
+            !serde_json::to_string(&disabled.conversation_state)
+                .unwrap()
+                .contains("<thinking_")
+        );
+    }
+
+    #[test]
+    fn default_reasoning_effort_parser_accepts_override_and_falls_back() {
+        assert_eq!(
+            parse_default_reasoning_effort(Some("medium")),
+            ReasoningEffort::Medium
+        );
+        assert_eq!(
+            parse_default_reasoning_effort(Some("MAX")),
+            ReasoningEffort::Max
+        );
+        assert_eq!(
+            parse_default_reasoning_effort(Some("invalid")),
+            ReasoningEffort::High
+        );
+        assert_eq!(parse_default_reasoning_effort(None), ReasoningEffort::High);
+    }
+
+    #[test]
+    fn adaptive_thinking_uses_provided_default_effort() {
+        let mut request = adaptive_reasoning_request("claude-sonnet-4-6");
+        request.output_config = None;
+
+        let result =
+            convert_request_with_default_reasoning_effort(&request, ReasoningEffort::Medium)
+                .unwrap();
+
+        assert_eq!(
+            result
+                .additional_model_request_fields
+                .as_ref()
+                .map(|fields| fields.reasoning.effort),
+            Some(ReasoningEffort::Medium)
+        );
+        assert!(
+            serde_json::to_string(&result.conversation_state)
+                .unwrap()
+                .contains("<thinking_effort>medium</thinking_effort>")
+        );
+    }
+
+    #[test]
+    fn reasoning_effort_rejects_unknown_values() {
+        let request = serde_json::json!({
+            "model": "claude-sonnet-4-6",
+            "max_tokens": 1024,
+            "messages": [{"role": "user", "content": "Hello"}],
+            "output_config": {"effort": "extreme"}
+        });
+
+        assert!(serde_json::from_value::<MessagesRequest>(request).is_err());
+    }
 
     #[test]
     fn test_map_native_models_passthrough_and_contexts() {

@@ -2,11 +2,11 @@
 
 use std::convert::Infallible;
 
-use anyhow::Error;
 use crate::kiro::model::events::Event;
-use crate::kiro::model::requests::kiro::KiroRequest;
+use crate::kiro::model::requests::kiro::{KiroRequest, ReasoningEffort};
 use crate::kiro::parser::decoder::EventStreamDecoder;
 use crate::token;
+use anyhow::Error;
 use axum::{
     Json as JsonExtractor,
     body::Body,
@@ -25,7 +25,10 @@ use super::converter::{ConversionError, convert_request};
 use super::middleware::AppState;
 use super::models::{NATIVE_MODELS, NativeModelSpec};
 use super::stream::{BufferedStreamContext, SseEvent, StreamContext};
-use super::types::{CountTokensRequest, CountTokensResponse, ErrorResponse, MessagesRequest, Model, ModelsResponse, OutputConfig, Thinking};
+use super::types::{
+    CountTokensRequest, CountTokensResponse, ErrorResponse, MessagesRequest, Model, ModelsResponse,
+    OutputConfig, Thinking,
+};
 use super::websearch;
 
 /// 将 KiroProvider 错误映射为 HTTP 响应
@@ -299,6 +302,7 @@ pub async fn post_messages(
     let kiro_request = KiroRequest {
         conversation_state: conversion_result.conversation_state,
         profile_arn: None,
+        additional_model_request_fields: conversion_result.additional_model_request_fields,
     };
 
     let request_body = match serde_json::to_string(&kiro_request) {
@@ -680,6 +684,14 @@ async fn handle_non_stream_request(
 /// - 其他模型：覆写为 enabled 类型
 /// - budget_tokens 固定为 20000
 fn override_thinking_from_model_name(payload: &mut MessagesRequest) {
+    if payload
+        .thinking
+        .as_ref()
+        .is_some_and(|thinking| thinking.thinking_type == "disabled")
+    {
+        return;
+    }
+
     let model_lower = payload.model.to_lowercase();
     if !model_lower.contains("thinking") {
         return;
@@ -704,12 +716,20 @@ fn override_thinking_from_model_name(payload: &mut MessagesRequest) {
         thinking_type: thinking_type.to_string(),
         budget_tokens: 20000,
     });
-    
-    if is_opus_4_6 {
-        payload.output_config = Some(OutputConfig {
-            effort: "high".to_string(),
-        });
+
+    if !is_opus_4_6
+        || payload
+            .output_config
+            .as_ref()
+            .and_then(|config| config.effort)
+            .is_some()
+    {
+        return;
     }
+
+    payload.output_config = Some(OutputConfig {
+        effort: Some(ReasoningEffort::High),
+    });
 }
 
 /// POST /v1/messages/count_tokens
@@ -812,6 +832,7 @@ pub async fn post_messages_cc(
     let kiro_request = KiroRequest {
         conversation_state: conversion_result.conversation_state,
         profile_arn: None,
+        additional_model_request_fields: conversion_result.additional_model_request_fields,
     };
 
     let request_body = match serde_json::to_string(&kiro_request) {
@@ -994,6 +1015,60 @@ fn create_buffered_sse_stream(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn thinking_suffix_preserves_explicit_effort() {
+        let mut request: MessagesRequest = serde_json::from_value(serde_json::json!({
+            "model": "claude-opus-4-6-thinking",
+            "max_tokens": 1024,
+            "messages": [{"role": "user", "content": "Hello"}],
+            "output_config": {"effort": "max"}
+        }))
+        .unwrap();
+
+        override_thinking_from_model_name(&mut request);
+
+        assert_eq!(
+            request.output_config.and_then(|config| config.effort),
+            Some(ReasoningEffort::Max)
+        );
+    }
+
+    #[test]
+    fn thinking_suffix_preserves_explicit_disabled() {
+        let mut request: MessagesRequest = serde_json::from_value(serde_json::json!({
+            "model": "claude-opus-4-6-thinking",
+            "max_tokens": 1024,
+            "messages": [{"role": "user", "content": "Hello"}],
+            "thinking": {"type": "disabled"},
+            "output_config": {"effort": "max"}
+        }))
+        .unwrap();
+
+        override_thinking_from_model_name(&mut request);
+
+        assert_eq!(
+            request
+                .thinking
+                .as_ref()
+                .map(|thinking| thinking.thinking_type.as_str()),
+            Some("disabled")
+        );
+
+        let result = convert_request(&request).unwrap();
+        assert_eq!(
+            result
+                .additional_model_request_fields
+                .as_ref()
+                .map(|fields| fields.reasoning.effort),
+            Some(ReasoningEffort::None)
+        );
+        assert!(
+            !serde_json::to_string(&result.conversation_state)
+                .unwrap()
+                .contains("<thinking_")
+        );
+    }
 
     #[tokio::test]
     async fn get_models_contains_every_native_model_with_output_limit() {

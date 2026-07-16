@@ -142,6 +142,27 @@ mod tests {
     }
 
     #[test]
+    fn test_inject_profile_arn_preserves_additional_model_request_fields() {
+        let body = r#"{
+            "conversationState":{"conversationId":"c1"},
+            "additionalModelRequestFields":{"reasoning":{"effort":"max"}}
+        }"#;
+        let arn = Some("arn:aws:codewhisperer:us-east-1:123:profile/ABC".to_string());
+
+        let result = inject_profile_arn(body, &arn);
+        let json: Value = serde_json::from_str(&result).unwrap();
+
+        assert_eq!(
+            json["profileArn"],
+            "arn:aws:codewhisperer:us-east-1:123:profile/ABC"
+        );
+        assert_eq!(
+            json["additionalModelRequestFields"],
+            serde_json::json!({"reasoning": {"effort": "max"}})
+        );
+    }
+
+    #[test]
     fn test_inject_profile_arn_with_none() {
         let body = r#"{"conversationState":{"conversationId":"c1"}}"#;
         let result = inject_profile_arn(body, &None);

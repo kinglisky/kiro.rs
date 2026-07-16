@@ -3,6 +3,8 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+use crate::kiro::model::requests::kiro::ReasoningEffort;
+
 // === 错误响应 ===
 
 /// API 错误响应
@@ -96,12 +98,7 @@ where
 /// OutputConfig 配置
 #[derive(Debug, Deserialize, Clone)]
 pub struct OutputConfig {
-    #[serde(default = "default_effort")]
-    pub effort: String,
-}
-
-fn default_effort() -> String {
-    "high".to_string()
+    pub effort: Option<ReasoningEffort>,
 }
 
 /// Claude Code 请求中的 metadata
